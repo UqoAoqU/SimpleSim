@@ -1,8 +1,8 @@
 """
 SimpleSim — A cycle-level GPU performance simulator for attention kernels.
 
-Quick start
------------
+Quick start (single workload)
+------------------------------
 >>> from simplesim import load_gpu_config, TiledWorkload, MMAOp, CycleSimulator
 >>> from simplesim.analysis import print_report
 >>> hw = load_gpu_config("configs/b200.yaml")
@@ -17,12 +17,26 @@ Quick start
 ... )
 >>> result = CycleSimulator(hw).simulate_tiled(wl)
 >>> print_report(result)
+
+Quick start (pipeline with dependencies)
+-----------------------------------------
+>>> from simplesim import Stage, Pipeline, TimelineSimulator, plot_timeline
+>>> pipe = Pipeline("fa4", stages=[
+...     Stage("forward",  workload=fwd_wl),
+...     Stage("backward", workload=bwd_wl, depends_on=["forward"]),
+... ])
+>>> tl = TimelineSimulator(hw).simulate(pipe)
+>>> fig = plot_timeline(tl)
+>>> fig.savefig("timeline.png", dpi=150, bbox_inches="tight")
 """
 
 from .hardware import ComputeUnit, GPUConfig, MemoryLevel, load_gpu_config
 from .workload import MMAOp, TiledWorkload, Workload
 from .simulator import CycleSimulator, SimResult, UnitResult
 from .analysis import print_report, print_roofline, roofline_point
+from .pipeline import Pipeline, Stage
+from .timeline_sim import StageSchedule, TimelineResult, TimelineSimulator, UnitInterval
+from .viz import plot_timeline, plot_utilization
 
 __all__ = [
     # hardware
@@ -42,4 +56,15 @@ __all__ = [
     "print_report",
     "print_roofline",
     "roofline_point",
+    # pipeline
+    "Pipeline",
+    "Stage",
+    # timeline
+    "StageSchedule",
+    "TimelineResult",
+    "TimelineSimulator",
+    "UnitInterval",
+    # visualization
+    "plot_timeline",
+    "plot_utilization",
 ]
