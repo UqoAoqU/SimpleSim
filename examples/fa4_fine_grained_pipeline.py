@@ -127,46 +127,70 @@ update_o_wl = Workload(
 )
 
 # ---------------------------------------------------------------------------
-# Build fine-grained pipeline
+# Build fine-grained pipeline  (QKTs back-to-back, Softmax overlaps next QKT)
 # ---------------------------------------------------------------------------
-# For each tile i, create 5 stages with explicit cross-tile dependencies.
+#
+# Key insight: QKT uses tensor_core + shared_memory; Softmax/RescaleO use
+# SFU + cuda_core.  These are *different* hardware units, so QKT[i+1] can
+# run in parallel with Softmax[i] — they only need to wait for each other's
+# *own* unit to be free.
+#
+# Dependency rules:
+#   hbm_load[i]  → hbm_load[i-1]          (HBM DMA serialized)
+#   QKT[i]       → QKT[i-1]  + hbm_load[i]  (TC serialized; need K data)
+#   Softmax[i]   → QKT[i]                  (need scores from QKT)
+#   RescaleO[i]  → Softmax[i]
+#   PV[0]        → RescaleO[0] + QKT[last] (TC free after all QKTs)
+#   PV[i>0]      → RescaleO[i] + PV[i-1]  (TC serialized; need P[i])
+#   update_o     → PV[last]
+#
+# Result: QKT[0] QKT[1] ... QKT[N-1] run back-to-back on tensor_core.
+#         Softmax[i] runs in parallel with QKT[i+1] on SFU.
+#         PV[0..N-1] run back-to-back on tensor_core after all QKTs finish.
 
 stages: list[Stage] = []
 
 for i in range(n_tiles):
-    # HBM load is serialized: tile i waits for tile i-1's load to finish
+    # HBM load serialized (but fast: 16 cyc, starts at cycle 0 for tile 0)
     stages.append(Stage(
         name=f"hbm_load[{i}]",
         workload=hbm_load_wl,
         depends_on=[f"hbm_load[{i-1}]"] if i > 0 else [],
     ))
 
-    # QKT needs: tile data (hbm_load[i]) AND tensor_core to be free (PV[i-1])
+    # QKT: serialized only on tensor_core (QKT[i-1]), NOT on PV[i-1]
     qkt_deps = [f"hbm_load[{i}]"]
     if i > 0:
-        qkt_deps.append(f"PV[{i-1}]")
+        qkt_deps.append(f"QKT[{i-1}]")   # ← TC serialized behind prev QKT
     stages.append(Stage(
         name=f"QKT[{i}]",
         workload=qkt_wl,
         depends_on=qkt_deps,
     ))
 
+    # Softmax and RescaleO: depend only on their own tile's QKT (SFU/CUDA)
     stages.append(Stage(
         name=f"Softmax[{i}]",
         workload=softmax_wl,
         depends_on=[f"QKT[{i}]"],
     ))
-
     stages.append(Stage(
         name=f"RescaleO[{i}]",
         workload=rescale_o_wl,
         depends_on=[f"Softmax[{i}]"],
     ))
 
+    # PV: needs RescaleO[i] (data) AND TC to be free
+    #   PV[0] waits for the last QKT to free the tensor_core
+    #   PV[i>0] waits for PV[i-1] (TC sequential)
+    if i == 0:
+        pv_deps = [f"RescaleO[0]", f"QKT[{n_tiles - 1}]"]
+    else:
+        pv_deps = [f"RescaleO[{i}]", f"PV[{i-1}]"]
     stages.append(Stage(
         name=f"PV[{i}]",
         workload=pv_wl,
-        depends_on=[f"RescaleO[{i}]"],
+        depends_on=pv_deps,
     ))
 
 stages.append(Stage(
