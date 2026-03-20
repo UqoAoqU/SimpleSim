@@ -168,11 +168,15 @@ for i in range(n_tiles):
         depends_on=qkt_deps,
     ))
 
-    # Softmax and RescaleO: depend only on their own tile's QKT (SFU/CUDA)
+    # Softmax[i]: needs QKT[i] scores AND SFU/CUDA Core to be free.
+    # SFU + CUDA Core are exclusive: must wait for RescaleO[i-1] to finish.
+    softmax_deps = [f"QKT[{i}]"]
+    if i > 0:
+        softmax_deps.append(f"RescaleO[{i-1}]")   # ← SFU serialized
     stages.append(Stage(
         name=f"Softmax[{i}]",
         workload=softmax_wl,
-        depends_on=[f"QKT[{i}]"],
+        depends_on=softmax_deps,
     ))
     stages.append(Stage(
         name=f"RescaleO[{i}]",
