@@ -151,50 +151,50 @@ update_o_wl = Workload(
 stages: list[Stage] = []
 
 for i in range(n_tiles):
-    # HBM load serialized (but fast: 16 cyc, starts at cycle 0 for tile 0)
+    # HBM load: serialized (only one DMA engine), but async w.r.t. compute.
+    # hbm_load[i+1] starts right after hbm_load[i] finishes (16 cyc each),
+    # so all 8 loads complete in 128 cycles — fully hidden inside tile 0's
+    # 2178-cycle compute window.
     stages.append(Stage(
         name=f"hbm_load[{i}]",
         workload=hbm_load_wl,
         depends_on=[f"hbm_load[{i-1}]"] if i > 0 else [],
     ))
 
-    # QKT: serialized only on tensor_core (QKT[i-1]), NOT on PV[i-1]
+    # QKT[i]: algorithmic dep on hbm_load[i] (K[i] in SMEM) AND PV[i-1]
+    # (TC free, AND SMEM double-buffer slot freed so K[i]+V[i] can reside).
+    # SMEM check: at QKT[i], active K[i]+V[i] (64KB) + pre-load K[i+1]+V[i+1]
+    # (64KB) = 128KB << 256KB.  Only one V tile stays in SMEM at a time.
     qkt_deps = [f"hbm_load[{i}]"]
     if i > 0:
-        qkt_deps.append(f"QKT[{i-1}]")   # ← TC serialized behind prev QKT
+        qkt_deps.append(f"PV[{i-1}]")   # TC free + SMEM buffer freed by PV
     stages.append(Stage(
         name=f"QKT[{i}]",
         workload=qkt_wl,
         depends_on=qkt_deps,
     ))
 
-    # Softmax[i]: needs QKT[i] scores AND SFU/CUDA Core to be free.
-    # SFU + CUDA Core are exclusive: must wait for RescaleO[i-1] to finish.
-    softmax_deps = [f"QKT[{i}]"]
-    if i > 0:
-        softmax_deps.append(f"RescaleO[{i-1}]")   # ← SFU serialized
+    # Softmax[i]: needs S[i] scores from QKT[i].  SFU/CUDA are naturally
+    # free because Softmax[i-1] ran inside the previous tile's pipeline.
     stages.append(Stage(
         name=f"Softmax[{i}]",
         workload=softmax_wl,
-        depends_on=softmax_deps,
+        depends_on=[f"QKT[{i}]"],
     ))
+
+    # RescaleO[i]: needs m_new/l from Softmax[i].
     stages.append(Stage(
         name=f"RescaleO[{i}]",
         workload=rescale_o_wl,
         depends_on=[f"Softmax[{i}]"],
     ))
 
-    # PV: needs RescaleO[i] (data) AND TC to be free
-    #   PV[0] waits for the last QKT to free the tensor_core
-    #   PV[i>0] waits for PV[i-1] (TC sequential)
-    if i == 0:
-        pv_deps = [f"RescaleO[0]", f"QKT[{n_tiles - 1}]"]
-    else:
-        pv_deps = [f"RescaleO[{i}]", f"PV[{i-1}]"]
+    # PV[i]: needs P[i] (from RescaleO[i]) and V[i] in SMEM.
+    # TC is free: last TC user was QKT[i], which ended before Softmax[i].
     stages.append(Stage(
         name=f"PV[{i}]",
         workload=pv_wl,
-        depends_on=pv_deps,
+        depends_on=[f"RescaleO[{i}]"],
     ))
 
 stages.append(Stage(
