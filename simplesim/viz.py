@@ -84,6 +84,7 @@ def plot_timeline(
     figsize: tuple[float, float] | None = None,
     title: str | None = None,
     clock_ghz: float | None = None,
+    max_preview_iters: int = 8,
 ) -> "Figure":
     """Gantt-style hardware-unit occupancy chart.
 
@@ -100,6 +101,11 @@ def plot_timeline(
     clock_ghz : float | None
         Clock speed for cycle→µs conversion.  If None the function tries
         to infer it from ``result.total_time_us`` and ``result.total_cycles``.
+    max_preview_iters : int
+        Maximum number of repeated iterations to draw per stage group.
+        If a stage repeats more than this, only the first
+        ``max_preview_iters - 1`` and the last iteration are rendered;
+        the rest are annotated as "⋯ ×N total".
 
     Returns
     -------
@@ -126,83 +132,117 @@ def plot_timeline(
     n_units = len(units)
     unit_y = {u: i for i, u in enumerate(units)}
 
+    # --- Build stage groups (for repeated stages, group by base name) ---
+    # group_name -> list of schedules in iteration order
+    seen_groups: list[str] = []
+    groups: dict[str, list] = {}
+    for sched in result.schedules:
+        # Base name strips "[i]" suffix from repeated stages
+        base = sched.stage_name.rsplit("[", 1)[0] if sched.total_iters > 1 else sched.stage_name
+        if base not in groups:
+            groups[base] = []
+            seen_groups.append(base)
+        groups[base].append(sched)
+
+    # Assign a stable color to each group
+    group_color = {
+        name: _STAGE_COLORS[i % len(_STAGE_COLORS)]
+        for i, name in enumerate(seen_groups)
+    }
+
     # --- Figure layout ---
-    n_stages = len(result.schedules)
     if figsize is None:
-        w = max(10.0, to_x(result.total_cycles) * 0.05 + 8)
-        h = max(4.0, n_units * 0.7 + 2.0)
-        figsize = (min(w, 22), h)
+        w = max(12.0, to_x(result.total_cycles) * 0.04 + 8)
+        h = max(4.0, n_units * 0.75 + 2.0)
+        figsize = (min(w, 26), h)
 
     fig, ax = plt.subplots(figsize=figsize)
     bar_height = 0.55
-    slack_alpha = 0.18
+    slack_alpha = 0.15
 
     legend_patches: list[mpatches.Patch] = []
 
-    for idx, sched in enumerate(result.schedules):
-        color = _STAGE_COLORS[idx % len(_STAGE_COLORS)]
-        stage_start_x = to_x(sched.start_cycle)
-        stage_end_x   = to_x(sched.end_cycle)
+    for group_name, g_scheds in groups.items():
+        color = group_color[group_name]
+        N = g_scheds[0].total_iters
 
-        for unit in units:
-            y = unit_y[unit]
+        # Decide which iterations to render
+        if N <= max_preview_iters:
+            render_iters = list(range(N))
+            ellipsis_after = None
+        else:
+            # Show first (max_preview_iters-1) + last
+            render_iters = list(range(max_preview_iters - 1)) + [N - 1]
+            ellipsis_after = max_preview_iters - 2   # insert annotation after this index
 
-            if unit in sched.unit_intervals:
-                iv = sched.unit_intervals[unit]
-                work_start_x = to_x(iv.start_cycle)
-                work_end_x   = to_x(iv.end_cycle)
-                work_width   = work_end_x - work_start_x
+        for render_idx, iter_i in enumerate(render_iters):
+            sched = g_scheds[iter_i]
+            # Alpha: full for first iter, slightly faded for later ones
+            alpha_bar = max(0.35, 1.0 - iter_i / max(N - 1, 1) * 0.55)
+            stage_end_x = to_x(sched.end_cycle)
 
-                # Active work bar
-                ax.barh(
-                    y, work_width,
-                    left=work_start_x,
-                    height=bar_height,
-                    color=color,
-                    edgecolor="white",
-                    linewidth=0.5,
-                    zorder=3,
-                )
+            for unit in units:
+                y = unit_y[unit]
 
-                # Slack bar: from unit end to stage end
-                slack_width = stage_end_x - work_end_x
-                if slack_width > 0:
+                if unit in sched.unit_intervals:
+                    iv = sched.unit_intervals[unit]
+                    work_start_x = to_x(iv.start_cycle)
+                    work_end_x   = to_x(iv.end_cycle)
+                    work_width   = work_end_x - work_start_x
+
+                    # Active work bar
                     ax.barh(
-                        y, slack_width,
-                        left=work_end_x,
+                        y, work_width,
+                        left=work_start_x,
                         height=bar_height,
                         color=color,
-                        alpha=slack_alpha,
-                        edgecolor="none",
-                        zorder=2,
+                        alpha=alpha_bar,
+                        edgecolor="white",
+                        linewidth=0.4,
+                        zorder=3,
                     )
 
-                # Bottleneck marker: small triangle above bar
-                if iv.is_bottleneck:
-                    mid_x = (work_start_x + work_end_x) / 2
-                    ax.annotate(
-                        "▼",
-                        xy=(mid_x, y + bar_height / 2),
-                        ha="center", va="bottom",
-                        fontsize=7, color="black", zorder=4,
-                    )
-            else:
-                # Unit not used in this stage — draw a thin placeholder
-                total_width = stage_end_x - stage_start_x
-                if total_width > 0:
-                    ax.barh(
-                        y, total_width,
-                        left=stage_start_x,
-                        height=bar_height * 0.15,
-                        color=color,
-                        alpha=0.08,
-                        edgecolor="none",
-                        zorder=1,
-                    )
+                    # Slack bar (unit finishes before compute bottleneck)
+                    slack_width = stage_end_x - work_end_x
+                    if slack_width > 0:
+                        ax.barh(
+                            y, slack_width,
+                            left=work_end_x,
+                            height=bar_height,
+                            color=color,
+                            alpha=slack_alpha,
+                            edgecolor="none",
+                            zorder=2,
+                        )
 
-        legend_patches.append(
-            mpatches.Patch(color=color, label=sched.stage_name)
-        )
+                    # Bottleneck marker (only on first iteration to avoid clutter)
+                    if iv.is_bottleneck and iter_i == 0:
+                        mid_x = (work_start_x + work_end_x) / 2
+                        ax.annotate(
+                            "▼",
+                            xy=(mid_x, y + bar_height / 2),
+                            ha="center", va="bottom",
+                            fontsize=7, color="black", zorder=4,
+                        )
+
+            # Ellipsis annotation between skipped iters
+            if ellipsis_after is not None and render_idx == ellipsis_after:
+                # Place "⋯ ×N" label in the gap between last shown and final iter
+                gap_start_x = to_x(g_scheds[render_idx].end_cycle)
+                gap_end_x   = to_x(g_scheds[N - 1].start_cycle)
+                mid_x = (gap_start_x + gap_end_x) / 2
+                mid_y = max(unit_y.values()) / 2
+                ax.text(
+                    mid_x, mid_y,
+                    f"⋯ ×{N} total",
+                    ha="center", va="center",
+                    fontsize=9, color=color,
+                    fontstyle="italic", zorder=5,
+                )
+
+        # Legend: for repeated stages include the repeat count
+        label = f"{group_name} ×{N}" if N > 1 else group_name
+        legend_patches.append(mpatches.Patch(color=color, label=label))
 
     # --- Axes formatting ---
     ax.set_yticks(range(n_units))

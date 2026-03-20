@@ -95,6 +95,9 @@ class StageSchedule:
     stage_cycles: int
     unit_intervals: dict[str, UnitInterval] = field(default_factory=dict)
     sim_result: SimResult | None = None
+    # Repeated-stage metadata (iteration=0, total_iters=1 for non-repeated stages)
+    iteration: int = 0
+    total_iters: int = 1
 
 
 @dataclass
@@ -174,36 +177,40 @@ class TimelineSimulator:
             # Start as soon as all predecessors have finished
             start = max((finish[dep] for dep in stage.depends_on), default=0)
 
-            # Simulate the stage workload
-            sim_result = self._run_stage(stage)
-
-            # Map per-unit cycle counts to absolute [start, end] intervals
-            all_unit_results = {
-                **sim_result.compute_results,
-                **sim_result.memory_results,
-            }
-            unit_intervals: dict[str, UnitInterval] = {}
-            for unit_name, ur in all_unit_results.items():
-                unit_intervals[unit_name] = UnitInterval(
-                    unit_name=unit_name,
+            if stage.repeat == 1:
+                # ── Single-shot stage ────────────────────────────────────
+                sim_result = self._run_stage(stage)
+                all_unit_results = {
+                    **sim_result.compute_results,
+                    **sim_result.memory_results,
+                }
+                unit_intervals: dict[str, UnitInterval] = {}
+                for unit_name, ur in all_unit_results.items():
+                    unit_intervals[unit_name] = UnitInterval(
+                        unit_name=unit_name,
+                        start_cycle=start,
+                        end_cycle=start + ur.cycles,
+                        unit_cycles=ur.cycles,
+                        is_bottleneck=ur.is_bottleneck,
+                    )
+                stage_cycles = sim_result.total_cycles
+                end = start + stage_cycles
+                finish[stage.name] = end
+                schedules.append(StageSchedule(
+                    stage_name=stage.name,
                     start_cycle=start,
-                    end_cycle=start + ur.cycles,
-                    unit_cycles=ur.cycles,
-                    is_bottleneck=ur.is_bottleneck,
-                )
-
-            stage_cycles = sim_result.total_cycles
-            end = start + stage_cycles
-            finish[stage.name] = end
-
-            schedules.append(StageSchedule(
-                stage_name=stage.name,
-                start_cycle=start,
-                end_cycle=end,
-                stage_cycles=stage_cycles,
-                unit_intervals=unit_intervals,
-                sim_result=sim_result,
-            ))
+                    end_cycle=end,
+                    stage_cycles=stage_cycles,
+                    unit_intervals=unit_intervals,
+                    sim_result=sim_result,
+                    iteration=0,
+                    total_iters=1,
+                ))
+            else:
+                # ── Repeated stage with hardware-aware pipelining ────────
+                iter_scheds = self._schedule_repeated_stage(stage, start)
+                schedules.extend(iter_scheds)
+                finish[stage.name] = iter_scheds[-1].end_cycle
 
         total_cycles = max((s.end_cycle for s in schedules), default=0)
 
@@ -218,6 +225,126 @@ class TimelineSimulator:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    # Units that can run concurrently with compute across iterations.
+    # Compute units (tensor_core, cuda_core, sfu) are exclusive — only one
+    # iteration may use them at a time.
+    # HBM / L2 model async-copy DMA engines that run independently of shader
+    # cores and can therefore overlap with the current tile's compute.
+    # shared_memory bandwidth is tied to MMA reads (feeds tensor_core) and
+    # is therefore EXCLUSIVE.  SMEM *capacity* allows double-buffering of
+    # tile data, but the read bandwidth itself is not overlappable.
+    _OVERLAPPABLE_UNITS: frozenset[str] = frozenset({"hbm", "l2_cache"})
+
+    def _schedule_repeated_stage(
+        self, stage: Stage, start_cycle: int
+    ) -> list[StageSchedule]:
+        """Pipeline N iterations of a repeated stage.
+
+        Scheduling rules
+        ----------------
+        * **Compute units** (tensor_core, cuda_core, sfu, …):
+          Iteration *k+1* must wait until **all** compute units of iteration
+          *k* are free.  This models the GPU's exclusive execution model.
+
+        * **Memory units** (hbm, l2_cache, shared_memory):
+          Iteration *k+1* can start as soon as the *same* unit finishes
+          iteration *k*, regardless of the compute schedule.  This models
+          async-copy / double-buffering where DMA engines run in parallel
+          with shader cores.
+
+        * **SMEM capacity check** — double buffering requires two tile
+          buffers in SMEM simultaneously.  If
+          ``2 × smem_bytes_per_iter > smem_capacity``, SMEM falls back to
+          exclusive (serial) scheduling to avoid bank conflicts.
+
+        Parameters
+        ----------
+        stage : Stage
+            Must have ``stage.repeat >= 2``.
+        start_cycle : int
+            Absolute cycle at which iteration 0 may begin.
+
+        Returns
+        -------
+        list[StageSchedule]
+            One ``StageSchedule`` per iteration (length == ``stage.repeat``).
+        """
+        sim_result = self._run_stage(stage)
+        N = stage.repeat
+
+        # ── SMEM capacity check ─────────────────────────────────────────
+        # Double-buffering requires two tiles in SMEM simultaneously.
+        # If capacity is insufficient, issue a warning but continue
+        # (scheduler still pipelines HBM; only SMEM capacity is at risk).
+        overlappable = set(self._OVERLAPPABLE_UNITS)
+        smem_result = sim_result.memory_results.get("shared_memory")
+        if smem_result is not None:
+            smem_ml = self.hw.memory_levels.get("shared_memory")
+            capacity = getattr(smem_ml, "capacity_bytes", 0)
+            if capacity > 0 and 2 * smem_result.total_ops_or_bytes > capacity:
+                import warnings
+                warnings.warn(
+                    f"Stage '{stage.name}': SMEM per iter "
+                    f"({smem_result.total_ops_or_bytes:,} B) × 2 exceeds "
+                    f"capacity ({capacity:,} B). Double-buffering not feasible.",
+                    stacklevel=3,
+                )
+
+        all_units = {
+            **sim_result.compute_results,
+            **sim_result.memory_results,
+        }
+
+        # Per-unit "next free" cycle (tracks resource availability)
+        unit_next_free: dict[str, int] = {u: start_cycle for u in all_units}
+
+        schedules: list[StageSchedule] = []
+
+        for i in range(N):
+            # ── Compute-exclusive readiness ─────────────────────────────
+            # All exclusive (compute) units from prev iter must be done.
+            compute_ready = max(
+                (unit_next_free[u] for u in all_units if u not in overlappable),
+                default=start_cycle,
+            )
+
+            # ── Schedule each unit ──────────────────────────────────────
+            iter_intervals: dict[str, UnitInterval] = {}
+            iter_start = compute_ready
+            iter_end = compute_ready
+
+            for u, ur in all_units.items():
+                if u in overlappable:
+                    # Memory: start when this unit was last freed
+                    s = unit_next_free[u]
+                else:
+                    # Compute: start when all compute is free
+                    s = compute_ready
+                e = s + ur.cycles
+                iter_intervals[u] = UnitInterval(
+                    unit_name=u,
+                    start_cycle=s,
+                    end_cycle=e,
+                    unit_cycles=ur.cycles,
+                    is_bottleneck=ur.is_bottleneck,
+                )
+                unit_next_free[u] = e
+                iter_start = min(iter_start, s)
+                iter_end = max(iter_end, e)
+
+            schedules.append(StageSchedule(
+                stage_name=f"{stage.name}[{i}]",
+                start_cycle=iter_start,
+                end_cycle=iter_end,
+                stage_cycles=iter_end - iter_start,
+                unit_intervals=iter_intervals,
+                sim_result=sim_result,
+                iteration=i,
+                total_iters=N,
+            ))
+
+        return schedules
 
     def _run_stage(self, stage: Stage) -> SimResult:
         wl = stage.workload

@@ -62,6 +62,22 @@ class Stage:
     name: str
     workload: AnyWorkload
     depends_on: list[str] = field(default_factory=list)
+    repeat: int = 1
+    """Number of times this stage repeats (e.g. KV-tile loop count).
+
+    When ``repeat > 1`` the ``TimelineSimulator`` applies hardware-aware
+    pipelining between iterations:
+
+    * **Memory units** (``hbm``, ``l2_cache``, ``shared_memory``) —
+      iteration *k+1* can begin as soon as the same unit finishes iteration
+      *k*, independent of the compute schedule.  This models async-copy /
+      double-buffering.  A SMEM capacity check ensures two tiles fit
+      simultaneously; if not, SMEM falls back to serial scheduling.
+
+    * **Compute units** (``tensor_core``, ``sfu``, ``cuda_core``) —
+      iteration *k+1* starts only when **all** compute units from iteration
+      *k* have finished (exclusive use).
+    """
 
 
 # ---------------------------------------------------------------------------
