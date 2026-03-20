@@ -1,0 +1,86 @@
+# NVIDIA B200 SXM Hardware Configuration
+# Per-SM throughput values for cycle-level simulation
+#
+# Sources:
+#   - NVIDIA B200 datasheet / Blackwell architecture whitepaper
+#   - FlashAttention-4 paper (Zadouri et al., 2026) — "Feeds and Speeds" analysis
+#     Table 1 formulae:
+#       T_mma  = 4MNd / 8192   →  tensor_core ops_per_cycle = 8192 FP16 FLOPS/SM/cyc
+#       T_smem = 3MNd / 8192   →  shared_memory bw = 128 B/SM/cycle  (derived below)
+#       T_exp  = MN   / 16     →  sfu ops_per_cycle = 16 ops/SM/cycle
+#
+# Derivation of per-SM per-cycle throughputs:
+#   tensor_core  : From T_mma = 4MNd/8192 → ops/cycle = 8192 FP16 FLOPS/SM/cycle
+#                  Cross-check: 8192 * 148 * 1.85e9 ≈ 2247 TFLOPS (matches B200 spec)
+#
+#   shared_memory: From T_smem formula for M=N=d=128:
+#                    T_smem = 3*128^3/8192 = 768 cycles
+#                    smem_bytes(QKt SS) = 1*1*128*128*2*2 = 65536 bytes
+#                    smem_bytes(PV TS)  = 1*1*128*128*2   = 32768 bytes (only B from smem)
+#                    total = 98304 bytes
+#                    bw = 98304 / 768 = 128 B/SM/cycle
+#
+#   cuda_core    : FP32 throughput from CUDA best practices guide
+#                  (https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/
+#                   index.html#throughput-of-native-arithmetic-instructions)
+#                  CC 10.0 (B200) = 128 FP32 ops/SM/cycle  (same as CC 9.0 H100;
+#                  128 FP32 CUDA cores per SM, unchanged from Hopper).
+#                  FP16/BF16 rate is 256/SM/cycle (2× FP32) but softmax statistics
+#                  are computed in FP32 → use 128.
+#                  FP32 divide is NOT native: rcp.approx (SFU,16/cyc) + mul (128/cyc).
+#
+#   hbm          : B200 HBM3e: ~8 TB/s → 8000e9 / 1.85e9 ≈ 4324 B/cycle (chip-level)
+#
+#   l2_cache     : Estimated ~20 TB/s → 20000e9 / 1.85e9 ≈ 10811 B/cycle (chip-level)
+#
+# Note: B200 introduces TMEM (Tensor Memory) — a dedicated on-chip buffer for
+# MMA accumulator tiles.  When operand A is sourced from TMEM (TS-mode MMA),
+# it contributes zero SMEM traffic.  This is modelled by setting
+# operand_a_source="tmem" in MMAOp, which causes smem_bytes() to skip the A term.
+
+name: "B200 SXM"
+architecture: "Blackwell"
+num_sms: 148
+clock_ghz: 1.85
+
+compute_units:
+  tensor_core:
+    # FP16/BF16 Tensor Core.  Derived from FA-4 Table 1: T_mma = 4MNd/8192
+    # → 8192 FP16 FLOPS per SM per cycle.
+    # Cross-check: 8192 × 148 × 1.85 GHz ≈ 2247 TFLOPS (B200 peak dense FP16).
+    ops_per_cycle: 8192
+    supported_dtypes: [fp16, bf16, fp8, fp4, tf32]
+
+  cuda_core:
+    # FP32 CUDA Core scalar/vector operations (fmax, fadd, fsub, fmul, compare).
+    # Source: CUDA best practices guide §12.1.1 "Throughput of Native Arithmetic
+    # Instructions" — CC 10.0 = 128 FP32 ops/SM/cycle.
+    # B200 has the same 128 FP32 CUDA cores per SM as H100 (CC 9.0).
+    # (FP16/BF16 rate = 256/SM/cycle; FP32 divide = rcp SFU + mul, not modelled here)
+    ops_per_cycle: 128
+    supported_dtypes: [fp32, fp16, int32]
+
+  sfu:
+    # Special Function Unit: exp, sin, cos, rsqrt (used for softmax exp).
+    # From FA-4 Table 1: T_exp = MN/16 → sfu = 16 ops/SM/cycle.
+    ops_per_cycle: 16
+    supported_dtypes: [fp32]
+
+memory_levels:
+  shared_memory:
+    # Per-SM SMEM/L1 MMA feed bandwidth.
+    # Derived from FA-4 Table 1 formula T_smem = 3MNd/8192 (see header comment).
+    # Effective rate at which the MMA unit can consume SMEM operands:
+    # 128 B/SM/cycle.
+    bandwidth_bytes_per_cycle: 128
+    capacity_bytes: 262144    # 256 KB per SM (Blackwell)
+
+  l2_cache:
+    # Chip-level aggregate L2 bandwidth (estimated ~20 TB/s).
+    bandwidth_bytes_per_cycle: 10811
+    capacity_bytes: 104857600  # 100 MB (Blackwell increased L2)
+
+  hbm:
+    # Chip-level HBM3e bandwidth: 8 TB/s → 8000e9 / 1.85e9 ≈ 4324 B/cycle.
+    bandwidth_bytes_per_cycle: 4324
+    capacity_bytes: 214748364800  # 200 GB (B200 HBM3e)

@@ -1,0 +1,70 @@
+# NVIDIA H100 SXM Hardware Configuration
+# Per-SM throughput values for cycle-level simulation
+#
+# Sources:
+#   - NVIDIA H100 datasheet (peak FP16 dense = 989 TFLOPS)
+#   - H100 whitepaper: 132 SMs, 1.83 GHz boost clock
+#   - L2 cache: 50 MB, ~10 TB/s aggregate
+#   - HBM3: 80 GB, 3.35 TB/s
+#
+# Derivation of per-SM per-cycle throughputs:
+#   tensor_core  : 989e12 / (132 * 1.83e9) ≈ 4096 FP16 FLOPS/SM/cycle
+#
+#   cuda_core    : FP32 throughput from CUDA best practices guide
+#                  (https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/
+#                   index.html#throughput-of-native-arithmetic-instructions)
+#                  CC 9.0 has 2× more FP32 ops/cycle than CC 8.0.
+#                  CC 8.0 (A100) = 64 FP32 ops/SM/cycle (128 CUDA cores / 2 pipelines)
+#                  CC 9.0 (H100) = 128 FP32 ops/SM/cycle  ← this value
+#                  Note: FP16/BF16 rate is 256/SM/cycle (2× FP32), but softmax
+#                  statistics (row-max, running sum, rescale) are computed in FP32.
+#                  "Divide" (O /= l) is NOT a single native instruction:
+#                  it compiles to rcp.approx.f32 (SFU, 16/cycle) + mul.f32 (128/cycle).
+#
+#   sfu          : 16 ops/SM/cycle (sin, cos, rcp, rsqrt, exp2, log2, sqrt)
+#                  Unchanged from CC 7.0 through CC 10.0 per CUDA docs.
+#   shared_memory: ~1024 B/SM/cycle (empirical from microbenchmarks)
+#   hbm          : 3350e9 / 1.83e9 ≈ 1831 B/cycle (chip-level; not per SM)
+#   l2_cache     : 10000e9 / 1.83e9 ≈ 5464 B/cycle (chip-level)
+
+name: "H100 SXM"
+architecture: "Hopper"
+num_sms: 132
+clock_ghz: 1.83
+
+compute_units:
+  tensor_core:
+    # FP16/BF16 Tensor Core: 989 TFLOPS / 132 SMs / 1.83 GHz ≈ 4096 FLOPS/SM/cyc
+    ops_per_cycle: 4096
+    supported_dtypes: [fp16, bf16, fp8, tf32]
+
+  cuda_core:
+    # FP32 CUDA Core scalar/vector operations (max, sub, add, mul, compare).
+    # Source: CUDA best practices guide §12.1.1 "Throughput of Native Arithmetic
+    # Instructions" — CC 9.0 = 128 FP32 ops/SM/cycle.
+    # (FP16/BF16 rate is 256/SM/cycle; BF16 add/mul = 256/SM/cycle on CC 9.0)
+    # Softmax stats use FP32 for numerical stability → use 128.
+    ops_per_cycle: 128
+    supported_dtypes: [fp32, fp16, int32]
+
+  sfu:
+    # Special Function Unit: exp, sin, cos, rsqrt, etc.
+    ops_per_cycle: 16
+    supported_dtypes: [fp32]
+
+memory_levels:
+  shared_memory:
+    # Per-SM L1/SMEM bandwidth (empirical; 128 KB/SM, ~1 TB/s per SM possible
+    # but MMA feed rate is the effective bottleneck at ~1024 B/SM/cycle).
+    bandwidth_bytes_per_cycle: 1024
+    capacity_bytes: 233472    # 228 KB per SM (configurable between L1 and SMEM)
+
+  l2_cache:
+    # Chip-level aggregate L2 bandwidth: ~10 TB/s → 10000e9 / 1.83e9 ≈ 5464 B/cyc
+    bandwidth_bytes_per_cycle: 5464
+    capacity_bytes: 52428800  # 50 MB
+
+  hbm:
+    # Chip-level HBM3 bandwidth: 3.35 TB/s → 3350e9 / 1.83e9 ≈ 1831 B/cyc
+    bandwidth_bytes_per_cycle: 1831
+    capacity_bytes: 85899345920  # 80 GB

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m examples.flash_attention 2>&1)",
+      "Bash(python -m examples.mla_decode 2>&1)",
+      "WebFetch(domain:docs.nvidia.com)",
+      "WebSearch",
+      "Bash(git init:*)"
+    ]
+  }
+}
