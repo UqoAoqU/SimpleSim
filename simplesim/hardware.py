@@ -106,7 +106,7 @@ class GPUConfig:
         return ml.bandwidth_bytes_per_cycle if ml else 0.0
 
     def hbm_bytes_per_cycle(self) -> float:
-        """Return HBM bandwidth in bytes/cycle (chip-level), or 0 if absent."""
+        """Return HBM bandwidth in bytes/cycle/SM (per-SM share), or 0 if absent."""
         ml = self.memory_levels.get("hbm")
         return ml.bandwidth_bytes_per_cycle if ml else 0.0
 
@@ -129,11 +129,16 @@ class GPUConfig:
 
 def _parse_memory_level(name: str, data: dict) -> MemoryLevel:
     per_sm_levels = {"shared_memory", "l1_cache", "rf", "tmem"}
+    # Explicit YAML override takes precedence over name-based detection
+    if "is_per_sm" in data:
+        is_per_sm = bool(data["is_per_sm"])
+    else:
+        is_per_sm = name in per_sm_levels
     return MemoryLevel(
         name=name,
         bandwidth_bytes_per_cycle=float(data["bandwidth_bytes_per_cycle"]),
         capacity_bytes=data.get("capacity_bytes"),
-        is_per_sm=(name in per_sm_levels),
+        is_per_sm=is_per_sm,
     )
 
 

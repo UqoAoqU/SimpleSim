@@ -31,12 +31,13 @@ Quick start (pipeline with dependencies)
 """
 
 from .hardware import ComputeUnit, GPUConfig, MemoryLevel, load_gpu_config
-from .workload import MMAOp, TiledWorkload, Workload
+from .workload import DataTensor, MMAOp, TiledWorkload, Workload
 from .simulator import CycleSimulator, SimResult, UnitResult
 from .analysis import print_report, print_roofline, roofline_point
 from .pipeline import Pipeline, Stage
 from .timeline_sim import StageSchedule, TimelineResult, TimelineSimulator, UnitInterval
-from .viz import plot_timeline, plot_utilization
+from .viz import plot_timeline, plot_timeline_with_smem, plot_utilization
+from .resource_scheduler import ResourceProfile, ResourceScheduler
 
 __all__ = [
     # hardware
@@ -45,6 +46,7 @@ __all__ = [
     "MemoryLevel",
     "load_gpu_config",
     # workload
+    "DataTensor",
     "MMAOp",
     "TiledWorkload",
     "Workload",
@@ -64,7 +66,11 @@ __all__ = [
     "TimelineResult",
     "TimelineSimulator",
     "UnitInterval",
+    # resource scheduler
+    "ResourceProfile",
+    "ResourceScheduler",
     # visualization
     "plot_timeline",
+    "plot_timeline_with_smem",
     "plot_utilization",
 ]

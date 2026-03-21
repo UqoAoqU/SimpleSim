@@ -32,6 +32,96 @@ from typing import Literal
 
 OperandSource = Literal["smem", "tmem", "rmem"]
 
+# Supported dtype name → bytes per element
+_DTYPE_BYTES: dict[str, float] = {
+    "fp32": 4, "tf32": 4,
+    "bf16": 2, "fp16": 2,
+    "fp8": 1, "fp8_e4m3": 1, "fp8_e5m2": 1,
+    "fp4": 0.5,
+}
+
+
+@dataclass
+class DataTensor:
+    """A named data buffer with type, shape, and storage location.
+
+    Used to describe the inputs and outputs of a workload stage so the
+    resource-constrained scheduler can track SMEM capacity and data flow.
+
+    Parameters
+    ----------
+    name : str
+        Descriptive label, e.g. ``"K_tile"``, ``"V_tile"``, ``"S_scores"``.
+    shape : tuple[int, ...]
+        Element counts per dimension, e.g. ``(128, 128)``.
+    dtype : str
+        Data type string: ``"bf16"``, ``"fp16"``, ``"fp8"``, ``"fp32"``, etc.
+    location : str
+        Where the buffer resides: ``"smem"``, ``"hbm"``, ``"rmem"``, ``"tmem"``.
+    """
+
+    name: str
+    shape: tuple[int, ...]
+    dtype: str
+    location: str  # "smem", "hbm", "rmem", "tmem"
+
+    @property
+    def dtype_bytes(self) -> float:
+        """Bytes per element for this dtype."""
+        if self.dtype not in _DTYPE_BYTES:
+            raise ValueError(f"Unknown dtype {self.dtype!r}; "
+                             f"known: {list(_DTYPE_BYTES)}")
+        return _DTYPE_BYTES[self.dtype]
+
+    @property
+    def size_bytes(self) -> int:
+        """Total buffer size in bytes."""
+        return int(math.prod(self.shape) * self.dtype_bytes)
+
+    @property
+    def smem_bytes(self) -> int:
+        """Bytes in shared memory (0 if not stored in SMEM)."""
+        return self.size_bytes if self.location == "smem" else 0
+
+    def load_workload(self, *, dst: str = "smem") -> "Workload":
+        """Create a ``Workload`` that loads this tensor from HBM to *dst*.
+
+        Models one async DMA transfer of ``size_bytes`` from HBM into the
+        destination (typically SMEM).  The resulting stage uses only HBM
+        bandwidth (no compute units) and occupies ``size_bytes`` of SMEM
+        capacity in the destination.
+
+        Parameters
+        ----------
+        dst : str
+            Destination memory, default ``"smem"``.
+
+        Returns
+        -------
+        Workload
+            A pure-memory workload suitable for use as a pipeline ``Stage``.
+
+        Example
+        -------
+        ::
+
+            K = DataTensor("K_tile", (128, 128), "bf16", "hbm")
+            load_K_stage = Stage("load_K", workload=K.load_workload())
+        """
+        nbytes = self.size_bytes
+        dst_tensor = DataTensor(
+            name=self.name,
+            shape=self.shape,
+            dtype=self.dtype,
+            location=dst,
+        )
+        return Workload(
+            name=f"load_{self.name}",
+            memory_bytes={"hbm": nbytes},
+            outputs=[dst_tensor],
+            smem_capacity_bytes=nbytes if dst == "smem" else 0,
+        )
+
 
 @dataclass
 class MMAOp:
@@ -146,11 +236,30 @@ class Workload:
     memory_bytes : dict[str, int]
         Mapping from memory-level name (must match ``GPUConfig.memory_levels``)
         to the total number of bytes transferred.
+    inputs : list[DataTensor]
+        Data buffers read by this workload (for resource tracking).
+    outputs : list[DataTensor]
+        Data buffers produced by this workload (for resource tracking).
+    smem_capacity_bytes : int
+        Shared memory capacity occupied while this workload runs (bytes).
+        Unlike SMEM bandwidth (tracked via ``memory_bytes``), this is the
+        *footprint* — how much SMEM is simultaneously live.
     """
 
     name: str
     compute_ops: dict[str, int] = field(default_factory=dict)
     memory_bytes: dict[str, int] = field(default_factory=dict)
+    inputs: list[DataTensor] = field(default_factory=list)
+    outputs: list[DataTensor] = field(default_factory=list)
+    smem_capacity_bytes: int = 0
+
+    def auto_smem_capacity(self) -> int:
+        """Compute SMEM capacity from inputs/outputs if not set explicitly."""
+        if self.smem_capacity_bytes > 0:
+            return self.smem_capacity_bytes
+        return sum(t.smem_bytes for t in self.inputs) + sum(
+            t.smem_bytes for t in self.outputs
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +289,12 @@ class TiledWorkload:
     extra_smem_bytes : int
         Additional SMEM bytes not captured by ``mma_ops``, e.g. writing back
         the dS matrix in the backward pass.
+    inputs : list[DataTensor]
+        Data buffers read by this workload (for resource tracking).
+    outputs : list[DataTensor]
+        Data buffers produced by this workload (for resource tracking).
+    smem_capacity_bytes : int
+        Shared memory capacity occupied while this workload runs (bytes).
     """
 
     name: str
@@ -187,6 +302,17 @@ class TiledWorkload:
     elementwise_ops: dict[str, int] = field(default_factory=dict)
     hbm_bytes: int = 0
     extra_smem_bytes: int = 0
+    inputs: list[DataTensor] = field(default_factory=list)
+    outputs: list[DataTensor] = field(default_factory=list)
+    smem_capacity_bytes: int = 0
+
+    def auto_smem_capacity(self) -> int:
+        """Compute SMEM capacity from inputs/outputs if not set explicitly."""
+        if self.smem_capacity_bytes > 0:
+            return self.smem_capacity_bytes
+        return sum(t.smem_bytes for t in self.inputs) + sum(
+            t.smem_bytes for t in self.outputs
+        )
 
     # ------------------------------------------------------------------
     # Aggregate helpers (used by the simulator)

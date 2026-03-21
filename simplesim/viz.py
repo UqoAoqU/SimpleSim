@@ -338,6 +338,249 @@ def plot_timeline(
 
 
 # ---------------------------------------------------------------------------
+# plot_timeline_with_smem — Enhanced timeline with SMEM capacity sub-plot
+# ---------------------------------------------------------------------------
+
+def plot_timeline_with_smem(
+    result: TimelineResult,
+    smem_steps: list[tuple[int, int]],
+    smem_capacity: int,
+    *,
+    time_unit: str = "us",
+    figsize: tuple[float, float] | None = None,
+    title: str | None = None,
+    clock_ghz: float | None = None,
+    max_preview_iters: int = 8,
+) -> "Figure":
+    """Pipeline timeline with an SMEM capacity track below.
+
+    Parameters
+    ----------
+    result : TimelineResult
+        Scheduled pipeline result.
+    smem_steps : list[tuple[int, int]]
+        SMEM usage step function from ``ResourceScheduler.get_smem_timeline()``.
+        Each entry is ``(cycle, total_bytes_in_use)``.
+    smem_capacity : int
+        Hardware SMEM capacity in bytes (for the red dashed limit line).
+    time_unit, figsize, title, clock_ghz, max_preview_iters :
+        Same as ``plot_timeline``.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+
+    ghz  = _resolve_clock(result, clock_ghz)
+    to_x = lambda c: _to_x(c, ghz, time_unit)
+
+    # ── Geometry ────────────────────────────────────────────────────────
+    all_units: set[str] = set()
+    for s in result.schedules:
+        all_units.update(s.unit_intervals.keys())
+    units   = _unit_display_order(list(all_units))
+    n_units = len(units)
+    unit_y  = {u: i for i, u in enumerate(units)}
+
+    seen_groups, groups = _build_groups(result)
+    group_color = {
+        name: _STAGE_COLORS[i % len(_STAGE_COLORS)]
+        for i, name in enumerate(seen_groups)
+    }
+
+    total_x = to_x(result.total_cycles)
+
+    if figsize is None:
+        w = max(14.0, total_x * 0.008 + 6)
+        h = max(5.0, n_units * 1.05 + 4.0)
+        figsize = (min(w, 30), h)
+
+    fig, (ax_main, ax_smem) = plt.subplots(
+        2, 1, figsize=figsize,
+        gridspec_kw={"height_ratios": [3, 1]},
+        sharex=True,
+    )
+
+    BAR_H       = 0.74
+    SLACK_ALPHA = 0.12
+    IDLE_COLOR  = "#BBBBBB"
+
+    # ── Dashed idle background ──────────────────────────────────────────
+    for unit in units:
+        y = unit_y[unit]
+        ax_main.barh(
+            y, total_x, left=0, height=BAR_H,
+            fill=False,
+            edgecolor=IDLE_COLOR, linewidth=0.9, linestyle="--",
+            zorder=1,
+        )
+
+    # ── Active bars + text labels ───────────────────────��───────────────
+    legend_patches: list[mpatches.Patch] = []
+    stage_boundaries: set[int] = {0, result.total_cycles}
+
+    for group_name, g_scheds in groups.items():
+        color = group_color[group_name]
+        N = len(g_scheds)
+
+        if N <= max_preview_iters:
+            render_scheds  = g_scheds
+            ellipsis_after = None
+        else:
+            render_scheds  = g_scheds[:max_preview_iters - 1] + [g_scheds[-1]]
+            ellipsis_after = max_preview_iters - 2
+
+        for render_idx, sched in enumerate(render_scheds):
+            iter_i = sched.iteration if sched.total_iters > 1 else render_idx
+
+            stage_boundaries.add(sched.start_cycle)
+            stage_boundaries.add(sched.end_cycle)
+
+            bar_label    = group_name if N == 1 else f"{group_name}[{iter_i}]"
+            alpha_active = max(0.42, 1.0 - render_idx / max(N - 1, 1) * 0.48)
+            stage_end_x  = to_x(sched.end_cycle)
+
+            for unit in units:
+                y = unit_y[unit]
+                if unit not in sched.unit_intervals:
+                    continue
+
+                iv           = sched.unit_intervals[unit]
+                work_start_x = to_x(iv.start_cycle)
+                work_end_x   = to_x(iv.end_cycle)
+                work_width   = work_end_x - work_start_x
+
+                ax_main.barh(
+                    y, work_width, left=work_start_x, height=BAR_H,
+                    color=color, alpha=alpha_active,
+                    edgecolor="white", linewidth=0.9,
+                    zorder=3,
+                )
+
+                slack_w = stage_end_x - work_end_x
+                if slack_w > 0:
+                    ax_main.barh(
+                        y, slack_w, left=work_end_x, height=BAR_H,
+                        color=color, alpha=SLACK_ALPHA,
+                        edgecolor=color, linewidth=0.5, linestyle=":",
+                        zorder=2,
+                    )
+
+                mid_x = (work_start_x + work_end_x) / 2
+                frac  = work_width / max(total_x, 1e-9)
+
+                if frac >= 0.045:
+                    ax_main.text(
+                        mid_x, y, bar_label,
+                        ha="center", va="center",
+                        fontsize=8, color="white", fontweight="bold",
+                        clip_on=True, zorder=5,
+                    )
+                elif frac >= 0.012:
+                    short = bar_label[:8]
+                    ax_main.text(
+                        mid_x, y, short,
+                        ha="center", va="center",
+                        fontsize=6.5, color="white", fontweight="bold",
+                        rotation=90, clip_on=True, zorder=5,
+                    )
+
+                if iv.is_bottleneck and render_idx == 0:
+                    ax_main.text(
+                        mid_x, y + BAR_H / 2 + 0.03, "\u25bc",
+                        ha="center", va="bottom",
+                        fontsize=7, color="#222222", zorder=6,
+                    )
+
+            if ellipsis_after is not None and render_idx == ellipsis_after:
+                gap_x0 = to_x(render_scheds[render_idx].end_cycle)
+                gap_x1 = to_x(g_scheds[-1].start_cycle)
+                ax_main.text(
+                    (gap_x0 + gap_x1) / 2, n_units / 2,
+                    f"\u22ef \u00d7{N} total",
+                    ha="center", va="center",
+                    fontsize=9, color=color, fontstyle="italic", zorder=6,
+                )
+
+        label = f"{group_name}  \u00d7{N}" if N > 1 else group_name
+        legend_patches.append(mpatches.Patch(color=color, label=label))
+
+    # ── Stage boundary lines ────────────────────────────────────────────
+    for cyc in sorted(stage_boundaries):
+        bx = to_x(cyc)
+        ax_main.axvline(bx, color="#999999", linewidth=0.6,
+                        linestyle=":", alpha=0.55, zorder=0)
+        ax_smem.axvline(bx, color="#999999", linewidth=0.6,
+                        linestyle=":", alpha=0.35, zorder=0)
+
+    # ── Row separators ──────────────────────────────────────────────────
+    for y_sep in range(n_units + 1):
+        ax_main.axhline(y_sep - 0.5, color="#DDDDDD", linewidth=0.7, zorder=0)
+
+    # ── Main axis labels ────────────────────────────────────────────────
+    ax_main.set_xlim(0, total_x * 1.02)
+    ax_main.set_yticks(range(n_units))
+    ax_main.set_yticklabels(
+        [_UNIT_LABELS.get(u, u) for u in units], fontsize=10,
+    )
+    ax_main.set_ylim(-0.55, n_units - 0.45)
+    ax_main.set_ylabel("Hardware Unit", fontsize=11)
+
+    plot_title = (title or
+                  f"Pipeline Timeline — {result.pipeline_name}"
+                  f"  [{result.hardware_name}]")
+    ax_main.set_title(plot_title, fontsize=12, fontweight="bold", pad=8)
+
+    ax_main.axvline(total_x, color="#333333", linewidth=1.2,
+                    linestyle="--", alpha=0.7)
+    ax_main.text(
+        total_x * 0.998, n_units - 0.52,
+        f" {result.total_time_us:.3f} \u00b5s",
+        va="bottom", ha="right",
+        fontsize=8.5, color="#333333", alpha=0.85,
+    )
+
+    ax_main.legend(
+        handles=legend_patches,
+        loc="upper left", bbox_to_anchor=(1.01, 1),
+        borderaxespad=0, fontsize=9,
+        title="Stages", title_fontsize=9,
+        framealpha=0.9,
+    )
+
+    # ── SMEM capacity sub-plot ──────────────────────────────────────────
+    if smem_steps:
+        xs = [to_x(c) for c, _b in smem_steps]
+        ys_kb = [b / 1024 for _c, b in smem_steps]
+        # Extend to total time
+        xs.append(total_x)
+        ys_kb.append(0)
+        ax_smem.fill_between(
+            xs, ys_kb, step="post", alpha=0.35, color="#4C72B0",
+        )
+        ax_smem.step(xs, ys_kb, where="post", color="#4C72B0", linewidth=1.2)
+
+    # Capacity limit line
+    if smem_capacity > 0:
+        cap_kb = smem_capacity / 1024
+        ax_smem.axhline(
+            cap_kb, color="#C44E52", linewidth=1.5,
+            linestyle="--", alpha=0.8,
+            label=f"Capacity ({cap_kb:.0f} KB)",
+        )
+
+    ax_smem.set_ylabel("SMEM (KB)", fontsize=10)
+    ax_smem.set_xlabel(
+        "Time (\u00b5s)" if time_unit == "us" else "Cycles", fontsize=11,
+    )
+    ax_smem.set_xlim(0, total_x * 1.02)
+    ax_smem.set_ylim(bottom=0)
+    ax_smem.legend(loc="upper right", fontsize=8, framealpha=0.8)
+    ax_smem.grid(axis="y", linestyle=":", alpha=0.4)
+
+    fig.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # plot_utilization
 # ---------------------------------------------------------------------------
 

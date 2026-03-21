@@ -29,7 +29,8 @@
 #                  are computed in FP32 → use 128.
 #                  FP32 divide is NOT native: rcp.approx (SFU,16/cyc) + mul (128/cyc).
 #
-#   hbm          : B200 HBM3e: ~8 TB/s → 8000e9 / 1.85e9 ≈ 4324 B/cycle (chip-level)
+#   hbm          : B200 HBM3e: ~8 TB/s → 8000e9 / 148 SMs / 1.85e9 ≈ 29.2 B/cycle/SM
+#                  (user-specified: 30.3 B/cycle/SM)
 #
 #   l2_cache     : Estimated ~20 TB/s → 20000e9 / 1.85e9 ≈ 10811 B/cycle (chip-level)
 #
@@ -81,6 +82,9 @@ memory_levels:
     capacity_bytes: 104857600  # 100 MB (Blackwell increased L2)
 
   hbm:
-    # Chip-level HBM3e bandwidth: 8 TB/s → 8000e9 / 1.85e9 ≈ 4324 B/cycle.
-    bandwidth_bytes_per_cycle: 4324
+    # Per-SM HBM3e bandwidth: 8 TB/s / 148 SMs / 1.85 GHz ≈ 30.3 B/cycle/SM.
+    # Each SM gets 1/num_sms of the total HBM bandwidth, since all SMs
+    # process independent tiles simultaneously.
+    bandwidth_bytes_per_cycle: 30.3
+    is_per_sm: true
     capacity_bytes: 214748364800  # 200 GB (B200 HBM3e)
