@@ -176,7 +176,7 @@ def run(
     print("  Per-tensor HBM loading + automatic overlap detection")
     print("=" * 70)
     print(f"  seq_kv={seq_kv}, n_tiles={n_tiles}, M=N={n_tile}, d={d}, BF16")
-    print(f"  HBM bw/SM = {b200.hbm_bytes_per_cycle():.1f} B/cycle")
+    print(f"  HBM bw (chip-level) = {b200.hbm_bytes_per_cycle():.1f} B/cycle")
     print(f"  Per tensor load = {smem_per_kv:,} B / {b200.hbm_bytes_per_cycle():.1f} "
           f"= {smem_per_kv / b200.hbm_bytes_per_cycle():.0f} cycles")
     print()
