@@ -22,9 +22,7 @@ Run
   python -m examples.flash_attention
 """
 
-import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from simplesim import (
     load_gpu_config,
@@ -39,7 +37,8 @@ from simplesim import (
 # ---------------------------------------------------------------------------
 # Hardware
 # ---------------------------------------------------------------------------
-CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs")
+ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
+CONFIG_DIR = os.path.join(ROOT_DIR, "configs")
 b200 = load_gpu_config(os.path.join(CONFIG_DIR, "b200.yaml"))
 h100 = load_gpu_config(os.path.join(CONFIG_DIR, "h100.yaml"))
 
@@ -110,12 +109,11 @@ def fa4_forward(
     #   (i) fmul  O *= rcp(l)                            → M*d  [cuda_core]
     #
     # Note: the FA-4 paper T_exp = MN/16 counts only step (c).
-    # Steps (e) and (h) are negligible (M << M*N) and not in the paper formula.
+    # Steps (e) and (h) are intentionally excluded here so the example continues
+    # to reproduce the published Table 1 values exactly.
     elementwise_ops = {
         "sfu": (
             M * N           # (c) exp of attention scores  ← T_exp in FA-4 paper
-            + M             # (e) exp(m_old - m_new) per row
-            + M             # (h) rcp.approx(l), once per row at kernel end
         ),
         "cuda_core": (
             M * N           # (a) fmax row max
@@ -320,7 +318,7 @@ def demo_h100_forward() -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
+def main() -> None:
     print()
     print("╔══════════════════════════════════════════════════╗")
     print("║  SimpleSim — FlashAttention-4 Example / Validate ║")
@@ -338,3 +336,7 @@ if __name__ == "__main__":
     print("Forward pass on H100 (M=N=d=128 and M=256):")
     print("-" * 60)
     demo_h100_forward()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simplesim"
+version = "0.1.0"
+description = "Cycle-level GPU performance simulator for attention kernels"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pyyaml>=6.0",
+  "tabulate>=0.9",
+]
+
+[project.optional-dependencies]
+viz = ["matplotlib>=3.10"]
+
+[tool.setuptools.packages.find]
+include = ["simplesim*"]

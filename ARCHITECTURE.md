@@ -27,23 +27,36 @@ the design decisions that connect them.
 
 ```
 SimpleSim/
-├── simplesim/              # Python package — the simulator library
-│   ├── __init__.py         # Public API exports
-│   ├── hardware.py         # GPUConfig, ComputeUnit, MemoryLevel, YAML loader
-│   ├── workload.py         # Workload (basic), MMAOp + TiledWorkload (MMA-aware)
-│   ├── simulator.py        # CycleSimulator: simulate() and simulate_tiled()
-│   └── analysis.py         # print_report(), roofline_point(), print_roofline()
+├── simplesim/                      # Python package — the simulator library
+│   ├── __init__.py                 # Public API exports
+│   ├── hardware.py                 # GPUConfig, ComputeUnit, MemoryLevel, YAML loader
+│   ├── workload.py                 # Workload (basic), MMAOp + TiledWorkload (MMA-aware)
+│   ├── simulator.py                # CycleSimulator: simulate() and simulate_tiled()
+│   ├── analysis.py                 # print_report(), roofline_point(), print_roofline()
+│   ├── pipeline.py                 # Stage / Pipeline data model
+│   ├── timeline_sim.py             # Dependency-aware timeline simulation
+│   ├── resource_scheduler.py       # Resource-constrained scheduling helpers
+│   └── viz.py                      # Optional matplotlib timeline/utilization plots
 │
-├── configs/                # Hardware YAML files (one per GPU SKU)
-│   ├── h100.yaml           # NVIDIA H100 SXM (Hopper, 132 SMs @ 1.83 GHz)
-│   └── b200.yaml           # NVIDIA B200 SXM (Blackwell, 148 SMs @ 1.85 GHz)
+├── configs/                        # Hardware YAML files (one per GPU SKU)
+│   ├── h100.yaml                   # NVIDIA H100 SXM (Hopper, 132 SMs @ 1.83 GHz)
+│   └── b200.yaml                   # NVIDIA B200 SXM (Blackwell, 148 SMs @ 1.85 GHz)
 │
 ├── examples/
-│   └── flash_attention.py  # FA-4 forward + backward; validates against Table 1/3
+│   ├── flash_attention.py          # FA-4 forward/backward validation against Table 1/3
+│   ├── fa4_pipeline.py             # End-to-end forward/backward pipeline demo
+│   ├── fa4_tiled_pipeline.py       # KV-tile pipeline demo
+│   ├── fa4_fine_grained_pipeline.py# Fine-grained stage overlap demo
+│   ├── fa4_resource_scheduled.py   # Automatic resource scheduling demo
+│   ├── fa4_forward_breakdown.py    # Single-tile forward stage breakdown
+│   └── mla_decode.py               # MLA decode analysis and MHA comparison
 │
-├── requirements.txt        # pyyaml, tabulate
-├── plan.md                 # Original design plan (reference)
-└── ARCHITECTURE.md         # This file
+├── tests/
+│   └── test_examples_and_regressions.py  # Import safety + FA-4 regression checks
+├── pyproject.toml                  # Packaging metadata and optional viz dependency
+├── requirements.txt                # Minimal runtime dependencies
+├── plan.md                         # Original design plan (reference)
+└── ARCHITECTURE.md                 # This file
 ```
 
 ---
@@ -410,6 +423,12 @@ Run the example:
 
 ```
 python -m examples.flash_attention
+```
+
+Run the automated regression tests:
+
+```
+python -m unittest discover -s tests -v
 ```
 
 Expected output (Table 1 portion):

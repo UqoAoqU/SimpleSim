@@ -47,8 +47,6 @@ Run
 """
 
 import os
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from simplesim import (
     load_gpu_config,
@@ -62,7 +60,8 @@ from simplesim import (
 # ---------------------------------------------------------------------------
 # Hardware
 # ---------------------------------------------------------------------------
-CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs")
+ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
+CONFIG_DIR = os.path.join(ROOT_DIR, "configs")
 b200 = load_gpu_config(os.path.join(CONFIG_DIR, "b200.yaml"))
 
 

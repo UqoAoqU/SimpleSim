@@ -106,7 +106,7 @@ class GPUConfig:
         return ml.bandwidth_bytes_per_cycle if ml else 0.0
 
     def hbm_bytes_per_cycle(self) -> float:
-        """Return HBM bandwidth in bytes/cycle/SM (per-SM share), or 0 if absent."""
+        """Return HBM bandwidth in bytes/cycle (chip-level), or 0 if absent."""
         ml = self.memory_levels.get("hbm")
         return ml.bandwidth_bytes_per_cycle if ml else 0.0
 

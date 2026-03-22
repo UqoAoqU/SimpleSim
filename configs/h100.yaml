@@ -24,7 +24,7 @@
 #   sfu          : 16 ops/SM/cycle (sin, cos, rcp, rsqrt, exp2, log2, sqrt)
 #                  Unchanged from CC 7.0 through CC 10.0 per CUDA docs.
 #   shared_memory: ~1024 B/SM/cycle (empirical from microbenchmarks)
-#   hbm          : 3350e9 / 132 SMs / 1.83e9 ≈ 13.9 B/cycle/SM (per-SM share)
+#   hbm          : 3350e9 / 1.83e9 ≈ 1831 B/cycle (chip-level)
 #   l2_cache     : 10000e9 / 1.83e9 ≈ 5464 B/cycle (chip-level)
 
 name: "H100 SXM"
@@ -65,8 +65,7 @@ memory_levels:
     capacity_bytes: 52428800  # 50 MB
 
   hbm:
-    # Per-SM HBM3 bandwidth: 3.35 TB/s / 132 SMs / 1.83 GHz ≈ 13.9 B/cycle/SM.
-    # Each SM gets 1/num_sms of the total HBM bandwidth.
-    bandwidth_bytes_per_cycle: 13.9
-    is_per_sm: true
+    # Chip-level HBM3 bandwidth: 3.35 TB/s / 1.83 GHz ≈ 1831 B/cycle.
+    bandwidth_bytes_per_cycle: 1831
+    is_per_sm: false
     capacity_bytes: 85899345920  # 80 GB

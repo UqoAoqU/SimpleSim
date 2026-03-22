@@ -6,8 +6,14 @@ A cycle-level GPU performance simulator for attention kernels, implementing the
 ## Quick Start
 
 ```bash
-pip install pyyaml tabulate
+python -m pip install -e .
 python -m examples.flash_attention
+```
+
+For visualization examples, install the optional plotting dependency:
+
+```bash
+python -m pip install -e ".[viz]"
 ```
 
 ## What it does
@@ -56,3 +62,16 @@ print_report(result)
 
 See `ARCHITECTURE.md` for a full component guide, the MMAOp formula derivation,
 and instructions for adding new GPUs and workloads.
+
+## Development
+
+Run the regression tests from the repository root:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Examples are written to be run as modules from the repository root, e.g.
+`python -m examples.fa4_pipeline`. Importing an example module no longer starts
+simulations or writes figures automatically; use each module's `main()` or
+`run()` entrypoint to execute it programmatically.
