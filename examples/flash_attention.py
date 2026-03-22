@@ -109,12 +109,11 @@ def fa4_forward(
     #   (i) fmul  O *= rcp(l)                            → M*d  [cuda_core]
     #
     # Note: the FA-4 paper T_exp = MN/16 counts only step (c).
-    # Steps (e) and (h) are negligible (M << M*N) and not in the paper formula.
+    # Steps (e) and (h) are intentionally excluded here so the example continues
+    # to reproduce the published Table 1 values exactly.
     elementwise_ops = {
         "sfu": (
             M * N           # (c) exp of attention scores  ← T_exp in FA-4 paper
-            + M             # (e) exp(m_old - m_new) per row
-            + M             # (h) rcp.approx(l), once per row at kernel end
         ),
         "cuda_core": (
             M * N           # (a) fmax row max
