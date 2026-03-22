@@ -22,9 +22,7 @@ Run
   python -m examples.flash_attention
 """
 
-import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from simplesim import (
     load_gpu_config,
@@ -39,7 +37,8 @@ from simplesim import (
 # ---------------------------------------------------------------------------
 # Hardware
 # ---------------------------------------------------------------------------
-CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs")
+ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
+CONFIG_DIR = os.path.join(ROOT_DIR, "configs")
 b200 = load_gpu_config(os.path.join(CONFIG_DIR, "b200.yaml"))
 h100 = load_gpu_config(os.path.join(CONFIG_DIR, "h100.yaml"))
 
@@ -320,7 +319,7 @@ def demo_h100_forward() -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
+def main() -> None:
     print()
     print("╔══════════════════════════════════════════════════╗")
     print("║  SimpleSim — FlashAttention-4 Example / Validate ║")
@@ -338,3 +337,7 @@ if __name__ == "__main__":
     print("Forward pass on H100 (M=N=d=128 and M=256):")
     print("-" * 60)
     demo_h100_forward()
+
+
+if __name__ == "__main__":
+    main()

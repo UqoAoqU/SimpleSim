@@ -56,8 +56,7 @@ And Q is re-read from SMEM once per KV tile:
   - Q re-reads: 128× the base Q size
 """
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+import os
 
 from simplesim import (
     load_gpu_config,
@@ -69,7 +68,8 @@ from simplesim import (
     print_roofline,
 )
 
-CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs")
+ROOT_DIR = os.path.dirname(os.path.dirname(__file__))
+CONFIG_DIR = os.path.join(ROOT_DIR, "configs")
 b200 = load_gpu_config(os.path.join(CONFIG_DIR, "b200.yaml"))
 h100 = load_gpu_config(os.path.join(CONFIG_DIR, "h100.yaml"))
 
@@ -420,7 +420,11 @@ def demo_h100_comparison() -> None:
     print()
 
 
-if __name__ == "__main__":
+def main() -> None:
     demo_mla_decode()
     demo_mla_vs_mha()
     demo_h100_comparison()
+
+
+if __name__ == "__main__":
+    main()
